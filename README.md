@@ -1,51 +1,102 @@
+# Emotion Based Music Recommendation System
 
-# Emotion based music recommendation system
+This repository contains a Streamlit application that scans a user's facial expression through a webcam, predicts the dominant emotion with a pretrained CNN model, and recommends songs from the included `muse_v3.csv` dataset.
 
-This web based app written in python will first scan your current emotion with the help of OpenCV & then crop the image of your face from entire frame once the cropped image is ready it will give this image to trained MACHINE LEARNING model in order to predict the emotion of the cropped image.This will happen for 30-40 times in 2-3 seconds, now once we have list of emotion's (contain duplicate elements) with us it will first sort the list based on frequency & remove the duplicates. After performing all the above steps we will be having a list containing user's emotion in sorted order, Now we just have to iterate over the list & recommend songs based on emotions present in the list.
+## Current Project Structure
 
-
-## Installation & Run
-
-Create new project in pycharm and add above files. After that open terminal and run the following command. This will install all the modules needed to run this app. 
-
-```bash
-  pip install -r requirements.txt
+```text
+Emotion-based-music-recommendation-system/
+|-- app.py
+|-- requirements.txt
+|-- README.md
+|-- muse_v3.csv
+|-- model.h5
+`-- haarcascade_frontalface_default.xml
 ```
 
-To run the app, type following command in terminal. 
-```bash
-  streamlit run app.py
+## Features
+
+- Webcam-based facial emotion scanning with OpenCV.
+- Emotion classification using a pretrained TensorFlow / Keras model.
+- Song recommendation using the included music dataset.
+- Streamlit UI for running the scan and viewing recommendations.
+
+## Changes Made In This Recovery Pass
+
+The original repository contained a usable prototype, but it had several problems that would break or degrade the app on a modern Python stack. The following changes were applied:
+
+1. Rebuilt the app around explicit helper functions.
+   The original file relied heavily on top-level execution, which made it harder to validate, reuse, and recover.
+
+2. Removed webcam initialization at import time.
+   The old code opened `cv2.VideoCapture(0)` globally. The app now opens the webcam only when the user clicks `Scan Emotion`.
+
+3. Fixed modern pandas compatibility.
+   The original recommendation logic used `DataFrame.append`, which is removed in current pandas versions. The app now uses `pd.concat`.
+
+4. Added file-path safety with `pathlib`.
+   All key project files are now loaded relative to the repository path instead of the current working directory.
+
+5. Cached large resources safely.
+   The dataset, cascade classifier, and TensorFlow model are now loaded through Streamlit caching helpers so repeated reruns do not reload everything from disk each time.
+
+6. Normalized emotion mapping for recommendations.
+   The original code mixed labels such as `fear`, `happy`, `Neutral`, and `Fearful`, which caused several predictions to fall through to the wrong recommendation bucket. The app now maps prediction labels consistently before sampling songs.
+
+7. Added runtime validation and clearer error handling.
+   The recovered app now checks for:
+   - missing dataset file
+   - missing model weights
+   - invalid dataset columns
+   - missing cascade classifier
+   - unavailable webcam
+   - unreadable webcam frames
+
+8. Preserved recommendations across Streamlit reruns.
+   The app now uses `st.session_state` so the detected emotion summary and generated recommendations stay visible after the scan completes.
+
+9. Cleaned the dependency list.
+   The old `requirements.txt` included `collection`, which is not a valid installable package. The dependencies were reduced to the packages the app actually needs.
+
+## Setup
+
+1. Create and activate a virtual environment.
+
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
 ```
 
-## Libraries
+2. Install dependencies.
 
-- Streamlit
-- Opencv
-- Numpy
-- Pandas
-- Tensorflow
-- Keras
+```powershell
+pip install -r requirements.txt
+```
 
+3. Run the Streamlit application.
 
-## Screenshots
+```powershell
+streamlit run app.py
+```
 
-![app · Streamlit - Google Chrome 28-04-2022 18_08_18 (2)](https://user-images.githubusercontent.com/72250606/165754362-8e0dec51-c42a-4efe-8215-b6cc8c23923c.png)
-![Video 28-04-2022 18_09_52](https://user-images.githubusercontent.com/72250606/165754424-492954ca-666e-4430-8504-5d93a5a041ab.png)
-![Video 28-04-2022 18_09_57](https://user-images.githubusercontent.com/72250606/165754428-6c22b327-c9a2-401a-8f19-d1838c201777.png)
-![Video 28-04-2022 18_09_47](https://user-images.githubusercontent.com/72250606/165754415-3a4559e7-2338-4591-b1dc-159436eeebc4.png)
+## Usage
 
-## Demo video
+1. Start the app with Streamlit.
+2. Click `Scan Emotion`.
+3. Allow the webcam to capture your face for several frames.
+4. Press `x` in the OpenCV window if you want to stop the scan early.
+5. Review the generated song recommendations in the Streamlit page.
 
- [Emotion based music recommendation system](https://youtu.be/eSBsY4WwgGw)
- 
+## Notes
 
-## Authors
+- This project requires a working webcam.
+- The pretrained model file `model.h5` is expected to be present in the repository root.
+- Recommendation quality depends on both model accuracy and the quality of the source song dataset.
+- This recovery pass focused on code stability and maintainability, not on retraining the emotion model.
 
-- [Udhay Brahmi](https://github.com/Udhay-Brahmi)
+## Verification Performed
 
-
-
-## Support
-
-For support, email udhaybrahmi786@gmail.com or udhaybrahmi@gmail.com.
-
+- The repository was cloned locally and inspected.
+- `app.py` was rewritten into a safer baseline for modern Streamlit and pandas.
+- The dependency manifest and README were updated.
+- Full runtime verification was not completed because this app depends on local package installation, TensorFlow compatibility, and live webcam access on this machine.

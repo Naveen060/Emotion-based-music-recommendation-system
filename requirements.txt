@@ -1,7 +1,5 @@
-streamlit
 numpy
 pandas
 opencv-python
+streamlit
 tensorflow
-keras
-collection
