@@ -34,14 +34,6 @@ EMOTION_BUCKET_MAP = {
     "Surprised": "happy",
 }
 
-RECOMMENDATION_SPLITS = {
-    1: [30],
-    2: [20, 10],
-    3: [15, 10, 5],
-    4: [10, 9, 8, 3],
-    5: [10, 7, 6, 5, 2],
-}
-
 cv2.ocl.setUseOpenCL(False)
 
 
@@ -63,18 +55,21 @@ def load_song_dataset():
         missing_list = ", ".join(sorted(missing_columns))
         raise ValueError(f"Dataset is missing required columns: {missing_list}")
 
-    cleaned = df.rename(
-        columns={
-            "lastfm_url": "link",
-            "track": "name",
-            "number_of_emotion_tags": "emotional",
-            "valence_tags": "pleasant",
-        }
-    )[["name", "emotional", "pleasant", "link", "artist"]].dropna(subset=["name", "link", "artist"])
+    cleaned = (
+        df.rename(
+            columns={
+                "lastfm_url": "link",
+                "track": "name",
+                "number_of_emotion_tags": "emotional",
+                "valence_tags": "pleasant",
+            }
+        )[["name", "emotional", "pleasant", "link", "artist"]]
+        .dropna(subset=["name", "link", "artist"])
+        .sort_values(by=["emotional", "pleasant"])
+        .reset_index(drop=True)
+    )
 
-    cleaned = cleaned.sort_values(by=["emotional", "pleasant"]).reset_index(drop=True)
     chunks = np.array_split(cleaned, 5)
-
     return {
         "sad": chunks[0].copy(),
         "fear": chunks[1].copy(),
@@ -120,25 +115,39 @@ def load_emotion_model():
     return model
 
 
-def prioritize_emotions(emotions):
+def normalize_emotions(emotions):
+    mapped = [EMOTION_BUCKET_MAP.get(emotion) for emotion in emotions if EMOTION_BUCKET_MAP.get(emotion)]
     ordered = []
-    for emotion_name, _count in Counter(emotions).most_common():
-        normalized = EMOTION_BUCKET_MAP.get(emotion_name)
-        if normalized and normalized not in ordered:
-            ordered.append(normalized)
-    return ordered[:5]
+    for emotion_name, _count in Counter(mapped).most_common():
+        if emotion_name not in ordered:
+            ordered.append(emotion_name)
+    return ordered
 
 
-def recommendation_counts(emotion_count):
-    return RECOMMENDATION_SPLITS.get(emotion_count, RECOMMENDATION_SPLITS[5])
+def recommendation_plan(emotions, recommendation_count):
+    unique_count = max(1, len(emotions))
+    weights = {
+        1: [1.0],
+        2: [0.65, 0.35],
+        3: [0.5, 0.3, 0.2],
+        4: [0.4, 0.25, 0.2, 0.15],
+        5: [0.34, 0.23, 0.18, 0.15, 0.10],
+    }[min(unique_count, 5)]
+
+    counts = [max(1, round(recommendation_count * weight)) for weight in weights]
+    while sum(counts) > recommendation_count:
+        counts[counts.index(max(counts))] -= 1
+    while sum(counts) < recommendation_count:
+        counts[counts.index(min(counts))] += 1
+    return counts
 
 
-def recommend_songs(emotions, song_groups):
-    if not emotions:
-        return pd.DataFrame(columns=["name", "artist", "link"])
+def recommend_songs(emotions, song_groups, recommendation_count):
+    normalized = normalize_emotions(emotions)
+    if not normalized:
+        return pd.DataFrame(columns=["name", "artist", "link", "bucket"])
 
-    normalized = prioritize_emotions(emotions)
-    counts = recommendation_counts(len(normalized))
+    counts = recommendation_plan(normalized, recommendation_count)
     frames = []
 
     for emotion_name, sample_size in zip(normalized, counts):
@@ -146,15 +155,22 @@ def recommend_songs(emotions, song_groups):
         if group is None or group.empty:
             continue
         actual_size = min(sample_size, len(group))
-        frames.append(group.sample(n=actual_size, replace=False))
+        sampled = group.sample(n=actual_size, replace=False).copy()
+        sampled["bucket"] = emotion_name
+        frames.append(sampled)
 
     if not frames:
-        return pd.DataFrame(columns=["name", "artist", "link"])
+        return pd.DataFrame(columns=["name", "artist", "link", "bucket"])
 
-    return pd.concat(frames, ignore_index=True).drop_duplicates(subset=["name", "artist"]).head(30)
+    return (
+        pd.concat(frames, ignore_index=True)
+        .drop_duplicates(subset=["name", "artist"])
+        .head(recommendation_count)
+        .reset_index(drop=True)
+    )
 
 
-def scan_emotions(face_detector, model, frame_limit=20):
+def scan_emotions(face_detector, model, frame_limit):
     capture = cv2.VideoCapture(0)
     if not capture.isOpened():
         raise RuntimeError("Could not access the webcam. Check camera permissions and try again.")
@@ -180,7 +196,7 @@ def scan_emotions(face_detector, model, frame_limit=20):
                 emotion_label = EMOTION_LABELS[int(np.argmax(prediction))]
                 detected_emotions.append(emotion_label)
 
-                cv2.rectangle(frame, (x, y - 50), (x + w, y + h + 10), (255, 0, 0), 2)
+                cv2.rectangle(frame, (x, y - 50), (x + w, y + h + 10), (255, 132, 92), 2)
                 cv2.putText(
                     frame,
                     emotion_label,
@@ -202,45 +218,67 @@ def scan_emotions(face_detector, model, frame_limit=20):
     return detected_emotions
 
 
-def render_recommendations(recommendations):
-    st.write("")
+def recommendation_download_frame(recommendations):
+    if recommendations.empty:
+        return recommendations
+    return recommendations[["name", "artist", "bucket", "link"]]
+
+
+def render_styles():
     st.markdown(
-        "<h5 style='text-align: center; color: grey;'><b>Recommended songs with artist names</b></h5>",
+        """
+        <style>
+            .stApp {
+                background:
+                    radial-gradient(circle at top left, rgba(255, 132, 92, 0.16), transparent 30%),
+                    radial-gradient(circle at top right, rgba(73, 190, 255, 0.12), transparent 20%),
+                    linear-gradient(160deg, #07111b 0%, #101f2c 55%, #162636 100%);
+            }
+            .hero-panel {
+                padding: 1.4rem 1.6rem;
+                border-radius: 24px;
+                background: rgba(11, 20, 31, 0.82);
+                border: 1px solid rgba(255,255,255,0.08);
+                box-shadow: 0 18px 48px rgba(0,0,0,0.28);
+                margin-bottom: 1.2rem;
+            }
+            .hero-title {
+                font-size: 2.2rem;
+                margin-bottom: 0.3rem;
+            }
+            .hero-copy {
+                color: #b9c6d2;
+                line-height: 1.6;
+                margin: 0;
+            }
+        </style>
+        """,
         unsafe_allow_html=True,
     )
-    st.write("---------------------------------------------------------------------------------------------------------------------")
-
-    if recommendations.empty:
-        st.info("No recommendations are available yet. Run an emotion scan first.")
-        return
-
-    for index, row in recommendations.reset_index(drop=True).iterrows():
-        st.markdown(
-            f"<h4 style='text-align: center;'><a href='{row['link']}'>{index + 1}. {row['name']}</a></h4>",
-            unsafe_allow_html=True,
-        )
-        st.markdown(
-            f"<h5 style='text-align: center; color: grey;'><i>{row['artist']}</i></h5>",
-            unsafe_allow_html=True,
-        )
-        st.write("---------------------------------------------------------------------------------------------------------------------")
 
 
 def main():
-    st.set_page_config(page_title="Emotion Based Music Recommendation", layout="centered")
+    st.set_page_config(page_title="Emotion Based Music Recommendation", layout="wide")
+    render_styles()
+
     st.markdown(
-        "<h2 style='text-align: center; color: white;'><b>Emotion based music recommendation</b></h2>",
-        unsafe_allow_html=True,
-    )
-    st.markdown(
-        "<h5 style='text-align: center; color: grey;'><b>Click on a recommended song title to open it</b></h5>",
+        """
+        <div class="hero-panel">
+            <div class="hero-title">Emotion Based Music Recommendation</div>
+            <p class="hero-copy">
+                Scan facial emotion from a webcam feed, rank the dominant mood signals, and generate a playlist suggestion
+                from the bundled music dataset. This refreshed version adds better controls, reusable recommendations,
+                and export-ready results.
+            </p>
+        </div>
+        """,
         unsafe_allow_html=True,
     )
 
     if "detected_emotions" not in st.session_state:
         st.session_state.detected_emotions = []
     if "recommendations" not in st.session_state:
-        st.session_state.recommendations = pd.DataFrame(columns=["name", "artist", "link"])
+        st.session_state.recommendations = pd.DataFrame(columns=["name", "artist", "link", "bucket"])
 
     try:
         song_groups = load_song_dataset()
@@ -250,22 +288,67 @@ def main():
         st.error(str(exc))
         return
 
-    col1, col2, col3 = st.columns(3)
-    with col2:
-        if st.button("Scan Emotion"):
-            try:
-                detected_emotions = scan_emotions(face_detector, model)
-            except RuntimeError as exc:
-                st.error(str(exc))
-            else:
-                st.session_state.detected_emotions = detected_emotions
-                st.session_state.recommendations = recommend_songs(detected_emotions, song_groups)
+    with st.sidebar:
+        st.header("Controls")
+        frame_limit = st.slider("Frames to scan", min_value=10, max_value=40, value=20, step=5)
+        recommendation_count = st.slider("Songs to recommend", min_value=10, max_value=30, value=20, step=5)
+        st.caption("Press `x` in the OpenCV window if you want to stop scanning early.")
+
+    if st.button("Scan Emotion", type="primary"):
+        try:
+            detected_emotions = scan_emotions(face_detector, model, frame_limit=frame_limit)
+        except RuntimeError as exc:
+            st.error(str(exc))
+        else:
+            st.session_state.detected_emotions = detected_emotions
+            st.session_state.recommendations = recommend_songs(
+                detected_emotions,
+                song_groups,
+                recommendation_count=recommendation_count,
+            )
+
+    metric_a, metric_b, metric_c = st.columns(3)
+    metric_a.metric("Captured Emotion Frames", len(st.session_state.detected_emotions))
+    metric_b.metric("Unique Mood Buckets", len(normalize_emotions(st.session_state.detected_emotions)))
+    metric_c.metric("Recommended Songs", len(st.session_state.recommendations))
 
     if st.session_state.detected_emotions:
-        summary = ", ".join(prioritize_emotions(st.session_state.detected_emotions))
-        st.caption(f"Detected emotion priority: {summary}")
+        emotion_counts = Counter(st.session_state.detected_emotions)
+        summary = ", ".join(
+            f"{emotion} ({count})"
+            for emotion, count in emotion_counts.most_common()
+        )
+        st.info(f"Detected emotion summary: {summary}")
 
-    render_recommendations(st.session_state.recommendations)
+        breakdown_frame = pd.DataFrame(
+            [{"emotion": emotion, "count": count} for emotion, count in emotion_counts.most_common()]
+        )
+        left, right = st.columns([1.2, 2])
+        with left:
+            st.subheader("Emotion Breakdown")
+            st.dataframe(breakdown_frame, use_container_width=True, hide_index=True)
+        with right:
+            st.subheader("Recommended Playlist")
+            if st.session_state.recommendations.empty:
+                st.warning("No recommendations could be generated from the detected emotion frames.")
+            else:
+                for index, row in st.session_state.recommendations.iterrows():
+                    st.markdown(
+                        f"**{index + 1}. [{row['name']}]({row['link']})**  \n"
+                        f"{row['artist']}  \n"
+                        f"`bucket: {row['bucket']}`"
+                    )
+                    st.divider()
+
+                csv_bytes = recommendation_download_frame(st.session_state.recommendations).to_csv(index=False).encode("utf-8")
+                st.download_button(
+                    "Download Recommendations CSV",
+                    data=csv_bytes,
+                    file_name="emotion_playlist.csv",
+                    mime="text/csv",
+                )
+    else:
+        st.caption("Run a scan to generate mood-based recommendations.")
 
 
 if __name__ == "__main__":
