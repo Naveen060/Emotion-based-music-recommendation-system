@@ -18,6 +18,8 @@ This repository contains a Streamlit application that scans a user's facial expr
 - Recommendation count controls from the sidebar
 - Recommendation export as CSV
 - Emotion breakdown summary after each scan
+- Playlist refresh without needing another webcam scan
+- Bucket-level filtering for the generated playlist
 
 ## Run
 
@@ -45,7 +47,9 @@ This version keeps the original idea but updates the experience:
 3. added caching for large resources
 4. added sidebar controls for scan depth and playlist size
 5. added an emotion-count summary and recommendation export
-6. improved the visual presentation to feel more current
+6. added playlist refresh without a new webcam scan
+7. added bucket-level filtering for the generated playlist
+8. improved the visual presentation to feel more current
 
 ## Notes
 

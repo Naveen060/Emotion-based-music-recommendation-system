@@ -170,6 +170,12 @@ def recommend_songs(emotions, song_groups, recommendation_count):
     )
 
 
+def regenerate_recommendations(song_groups, recommendation_count):
+    if not st.session_state.detected_emotions:
+        return pd.DataFrame(columns=["name", "artist", "link", "bucket"])
+    return recommend_songs(st.session_state.detected_emotions, song_groups, recommendation_count)
+
+
 def scan_emotions(face_detector, model, frame_limit):
     capture = cv2.VideoCapture(0)
     if not capture.isOpened():
@@ -307,6 +313,9 @@ def main():
                 recommendation_count=recommendation_count,
             )
 
+    if st.session_state.detected_emotions and st.button("Refresh Playlist Without Rescan"):
+        st.session_state.recommendations = regenerate_recommendations(song_groups, recommendation_count)
+
     metric_a, metric_b, metric_c = st.columns(3)
     metric_a.metric("Captured Emotion Frames", len(st.session_state.detected_emotions))
     metric_b.metric("Unique Mood Buckets", len(normalize_emotions(st.session_state.detected_emotions)))
@@ -332,7 +341,16 @@ def main():
             if st.session_state.recommendations.empty:
                 st.warning("No recommendations could be generated from the detected emotion frames.")
             else:
-                for index, row in st.session_state.recommendations.iterrows():
+                bucket_filter = st.selectbox(
+                    "Filter playlist by mood bucket",
+                    ["all"] + sorted(st.session_state.recommendations["bucket"].unique().tolist()),
+                )
+                playlist = (
+                    st.session_state.recommendations
+                    if bucket_filter == "all"
+                    else st.session_state.recommendations[st.session_state.recommendations["bucket"] == bucket_filter]
+                )
+                for index, row in playlist.reset_index(drop=True).iterrows():
                     st.markdown(
                         f"**{index + 1}. [{row['name']}]({row['link']})**  \n"
                         f"{row['artist']}  \n"
@@ -340,7 +358,7 @@ def main():
                     )
                     st.divider()
 
-                csv_bytes = recommendation_download_frame(st.session_state.recommendations).to_csv(index=False).encode("utf-8")
+                csv_bytes = recommendation_download_frame(playlist).to_csv(index=False).encode("utf-8")
                 st.download_button(
                     "Download Recommendations CSV",
                     data=csv_bytes,
