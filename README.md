@@ -15,6 +15,7 @@ This repository contains a Streamlit application that scans a user's facial expr
 - Live webcam-based emotion scanning
 - Emotion ranking across multiple captured frames
 - Mood-bucket normalization for playlist generation
+- Score-based ranking inside each mood bucket instead of naive fixed slicing
 - Recommendation count controls from the sidebar
 - Recommendation export as CSV
 - Emotion breakdown summary after each scan
@@ -35,8 +36,8 @@ streamlit run app.py
 1. The app opens a webcam session through OpenCV.
 2. A pretrained emotion model predicts facial emotion per detected face frame.
 3. The captured emotions are ranked by frequency.
-4. The top mood buckets are mapped to segments of the music dataset.
-5. A recommendation list is sampled and displayed in the Streamlit interface.
+4. The top mood buckets are mapped to ranked candidate lists from the music dataset.
+5. A score-based shortlist is assembled with duplicate filtering and displayed in the Streamlit interface.
 
 ## Modernization Pass
 
@@ -50,6 +51,8 @@ This version keeps the original idea but updates the experience:
 6. added playlist refresh without a new webcam scan
 7. added bucket-level filtering for the generated playlist
 8. improved the visual presentation to feel more current
+9. replaced fixed dataset chunking with percentile-based bucket scoring
+10. reduced duplicate song picks by ranking and filtering repeated artist-track pairs
 
 ## Notes
 

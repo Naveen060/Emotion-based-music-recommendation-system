@@ -65,17 +65,25 @@ def load_song_dataset():
             }
         )[["name", "emotional", "pleasant", "link", "artist"]]
         .dropna(subset=["name", "link", "artist"])
-        .sort_values(by=["emotional", "pleasant"])
         .reset_index(drop=True)
     )
 
-    chunks = np.array_split(cleaned, 5)
+    emotional_rank = cleaned["emotional"].rank(pct=True, method="average")
+    pleasant_rank = cleaned["pleasant"].rank(pct=True, method="average")
+    scored = cleaned.assign(
+        sad_score=(1 - pleasant_rank) * 0.65 + emotional_rank * 0.35,
+        fear_score=(1 - pleasant_rank) * 0.55 + emotional_rank * 0.45,
+        angry_score=(1 - pleasant_rank) * 0.7 + emotional_rank * 0.3,
+        neutral_score=(1 - np.abs(pleasant_rank - 0.5) * 2) * 0.7 + (1 - np.abs(emotional_rank - 0.5) * 2) * 0.3,
+        happy_score=pleasant_rank * 0.75 + emotional_rank * 0.25,
+    )
+
     return {
-        "sad": chunks[0].copy(),
-        "fear": chunks[1].copy(),
-        "angry": chunks[2].copy(),
-        "neutral": chunks[3].copy(),
-        "happy": chunks[4].copy(),
+        "sad": scored.sort_values(by=["sad_score", "emotional"], ascending=[False, False]).reset_index(drop=True),
+        "fear": scored.sort_values(by=["fear_score", "emotional"], ascending=[False, False]).reset_index(drop=True),
+        "angry": scored.sort_values(by=["angry_score", "emotional"], ascending=[False, False]).reset_index(drop=True),
+        "neutral": scored.sort_values(by=["neutral_score", "pleasant"], ascending=[False, False]).reset_index(drop=True),
+        "happy": scored.sort_values(by=["happy_score", "pleasant"], ascending=[False, False]).reset_index(drop=True),
     }
 
 
@@ -149,15 +157,33 @@ def recommend_songs(emotions, song_groups, recommendation_count):
 
     counts = recommendation_plan(normalized, recommendation_count)
     frames = []
+    seen_pairs = set()
+
+    rng = np.random.default_rng()
 
     for emotion_name, sample_size in zip(normalized, counts):
         group = song_groups.get(emotion_name)
         if group is None or group.empty:
             continue
-        actual_size = min(sample_size, len(group))
-        sampled = group.sample(n=actual_size, replace=False).copy()
-        sampled["bucket"] = emotion_name
-        frames.append(sampled)
+        available_rows = []
+        for row in group.itertuples(index=False):
+            pair = (row.name, row.artist)
+            if pair not in seen_pairs:
+                available_rows.append(row)
+            if len(available_rows) >= sample_size * 4:
+                break
+
+        if not available_rows:
+            continue
+
+        candidate_frame = pd.DataFrame(available_rows, columns=group.columns)
+        actual_size = min(sample_size, len(candidate_frame))
+        selected_indices = rng.choice(candidate_frame.index.to_numpy(), size=actual_size, replace=False)
+        selected_rows = candidate_frame.loc[selected_indices].sort_index().copy()
+        for row in selected_rows.itertuples(index=False):
+            seen_pairs.add((row.name, row.artist))
+        selected_rows["bucket"] = emotion_name
+        frames.append(selected_rows)
 
     if not frames:
         return pd.DataFrame(columns=["name", "artist", "link", "bucket"])
@@ -165,6 +191,7 @@ def recommend_songs(emotions, song_groups, recommendation_count):
     return (
         pd.concat(frames, ignore_index=True)
         .drop_duplicates(subset=["name", "artist"])
+        .sort_values(by=["bucket", "pleasant", "emotional"], ascending=[True, False, False])
         .head(recommendation_count)
         .reset_index(drop=True)
     )
