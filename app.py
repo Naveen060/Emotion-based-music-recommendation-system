@@ -5,8 +5,15 @@ import cv2
 import numpy as np
 import pandas as pd
 import streamlit as st
-from tensorflow.keras.layers import Conv2D, Dense, Dropout, Flatten, MaxPooling2D
-from tensorflow.keras.models import Sequential
+
+try:
+    from tensorflow.keras.layers import Conv2D, Dense, Dropout, Flatten, MaxPooling2D
+    from tensorflow.keras.models import Sequential
+    TENSORFLOW_AVAILABLE = True
+except Exception:
+    Sequential = None
+    Conv2D = Dense = Dropout = Flatten = MaxPooling2D = None
+    TENSORFLOW_AVAILABLE = False
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -32,6 +39,13 @@ EMOTION_BUCKET_MAP = {
     "Neutral": "neutral",
     "Sad": "sad",
     "Surprised": "happy",
+}
+
+DEMO_PRESETS = {
+    "Focused Work": ["Neutral", "Happy", "Neutral", "Neutral", "Happy", "Surprised"],
+    "Late Night Calm": ["Sad", "Neutral", "Sad", "Neutral", "Fearful"],
+    "High Energy Boost": ["Happy", "Surprised", "Happy", "Angry", "Happy"],
+    "Rainy Day Reset": ["Sad", "Sad", "Neutral", "Fearful", "Neutral"],
 }
 
 cv2.ocl.setUseOpenCL(False)
@@ -89,13 +103,18 @@ def load_song_dataset():
 
 @st.cache_resource(show_spinner=False)
 def load_face_detector():
-    detector = cv2.CascadeClassifier(str(CASCADE_PATH))
-    if detector.empty():
-        raise FileNotFoundError(f"Cascade file could not be loaded: {CASCADE_PATH.name}")
+    detector_factory = getattr(cv2, "CascadeClassifier", None)
+    if detector_factory is None:
+        return None
+    detector = detector_factory(str(CASCADE_PATH))
+    if hasattr(detector, "empty") and detector.empty():
+        return None
     return detector
 
 
 def build_model():
+    if not TENSORFLOW_AVAILABLE:
+        raise RuntimeError("TensorFlow is not available in this environment.")
     model = Sequential()
     model.add(Conv2D(32, kernel_size=(3, 3), activation="relu", input_shape=(48, 48, 1)))
     model.add(Conv2D(64, kernel_size=(3, 3), activation="relu"))
@@ -115,8 +134,10 @@ def build_model():
 
 @st.cache_resource(show_spinner=False)
 def load_emotion_model():
+    if not TENSORFLOW_AVAILABLE:
+        return None
     if not MODEL_PATH.exists():
-        raise FileNotFoundError(f"Model weights file was not found: {MODEL_PATH.name}")
+        return None
 
     model = build_model()
     model.load_weights(str(MODEL_PATH))
@@ -204,6 +225,10 @@ def regenerate_recommendations(song_groups, recommendation_count):
 
 
 def scan_emotions(face_detector, model, frame_limit):
+    if model is None:
+        raise RuntimeError("The pretrained emotion model is not available. Use demo mode or install TensorFlow-compatible dependencies.")
+    if face_detector is None:
+        raise RuntimeError("The OpenCV cascade detector is not available in this local environment. Use demo mode instead.")
     capture = cv2.VideoCapture(0)
     if not capture.isOpened():
         raise RuntimeError("Could not access the webcam. Check camera permissions and try again.")
@@ -257,6 +282,29 @@ def recommendation_download_frame(recommendations):
     return recommendations[["name", "artist", "bucket", "link"]]
 
 
+def playlist_insights(recommendations):
+    if recommendations.empty:
+        return {
+            "top_artist": "N/A",
+            "dominant_bucket": "N/A",
+            "artist_diversity": 0,
+        }
+
+    artist_counts = recommendations["artist"].value_counts()
+    bucket_counts = recommendations["bucket"].value_counts()
+    return {
+        "top_artist": artist_counts.index[0],
+        "dominant_bucket": bucket_counts.index[0],
+        "artist_diversity": recommendations["artist"].nunique(),
+    }
+
+
+def run_demo_mode(song_groups, recommendation_count, preset_name):
+    detected_emotions = DEMO_PRESETS[preset_name]
+    recommendations = recommend_songs(detected_emotions, song_groups, recommendation_count)
+    return detected_emotions, recommendations
+
+
 def render_styles():
     st.markdown(
         """
@@ -283,6 +331,13 @@ def render_styles():
                 color: #b9c6d2;
                 line-height: 1.6;
                 margin: 0;
+            }
+            .mode-panel {
+                padding: 1rem 1.2rem;
+                border-radius: 20px;
+                margin-bottom: 1rem;
+                border: 1px solid rgba(255,255,255,0.08);
+                background: rgba(255,255,255,0.03);
             }
         </style>
         """,
@@ -312,35 +367,72 @@ def main():
         st.session_state.detected_emotions = []
     if "recommendations" not in st.session_state:
         st.session_state.recommendations = pd.DataFrame(columns=["name", "artist", "link", "bucket"])
+    if "mode_used" not in st.session_state:
+        st.session_state.mode_used = "Demo"
 
     try:
         song_groups = load_song_dataset()
-        face_detector = load_face_detector()
         model = load_emotion_model()
     except (FileNotFoundError, ValueError) as exc:
         st.error(str(exc))
         return
 
+    face_detector = None
+
     with st.sidebar:
         st.header("Controls")
+        mode = st.radio(
+            "Experience Mode",
+            ["Demo", "Webcam"],
+            index=0 if not TENSORFLOW_AVAILABLE else 1,
+            help="Demo mode generates playlists from curated emotion presets. Webcam mode uses the facial emotion model.",
+        )
+        demo_preset = st.selectbox("Demo preset", list(DEMO_PRESETS.keys()))
         frame_limit = st.slider("Frames to scan", min_value=10, max_value=40, value=20, step=5)
         recommendation_count = st.slider("Songs to recommend", min_value=10, max_value=30, value=20, step=5)
         st.caption("Press `x` in the OpenCV window if you want to stop scanning early.")
+        if mode == "Webcam" and model is None:
+            st.warning("TensorFlow model is unavailable in this local environment. Switch to Demo mode to explore the app.")
+        if mode == "Webcam":
+            face_detector = load_face_detector()
+            if face_detector is None:
+                st.warning("OpenCV cascade detection is unavailable in this local environment. Switch to Demo mode to continue.")
 
-    if st.button("Scan Emotion", type="primary"):
-        try:
-            detected_emotions = scan_emotions(face_detector, model, frame_limit=frame_limit)
-        except RuntimeError as exc:
-            st.error(str(exc))
-        else:
+    st.markdown(
+        f"""
+        <div class="mode-panel">
+            <strong>Current mode:</strong> {mode}
+            <br>
+            <span style="color:#b9c6d2;">
+                {'Live webcam emotion scanning is enabled.' if mode == 'Webcam' and model is not None else 'Curated demo emotion signals are driving the playlist preview.'}
+            </span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    if mode == "Demo":
+        if st.button("Generate Demo Playlist", type="primary"):
+            detected_emotions, recommendations = run_demo_mode(song_groups, recommendation_count, demo_preset)
             st.session_state.detected_emotions = detected_emotions
-            st.session_state.recommendations = recommend_songs(
-                detected_emotions,
-                song_groups,
-                recommendation_count=recommendation_count,
-            )
+            st.session_state.recommendations = recommendations
+            st.session_state.mode_used = "Demo"
+    else:
+        if st.button("Scan Emotion", type="primary"):
+            try:
+                detected_emotions = scan_emotions(face_detector, model, frame_limit=frame_limit)
+            except RuntimeError as exc:
+                st.error(str(exc))
+            else:
+                st.session_state.detected_emotions = detected_emotions
+                st.session_state.recommendations = recommend_songs(
+                    detected_emotions,
+                    song_groups,
+                    recommendation_count=recommendation_count,
+                )
+                st.session_state.mode_used = "Webcam"
 
-    if st.session_state.detected_emotions and st.button("Refresh Playlist Without Rescan"):
+    if st.session_state.detected_emotions and st.button("Refresh Playlist"):
         st.session_state.recommendations = regenerate_recommendations(song_groups, recommendation_count)
 
     metric_a, metric_b, metric_c = st.columns(3)
@@ -359,6 +451,12 @@ def main():
         breakdown_frame = pd.DataFrame(
             [{"emotion": emotion, "count": count} for emotion, count in emotion_counts.most_common()]
         )
+        insights = playlist_insights(st.session_state.recommendations)
+        insight_a, insight_b, insight_c = st.columns(3)
+        insight_a.metric("Top Artist", insights["top_artist"])
+        insight_b.metric("Dominant Bucket", insights["dominant_bucket"])
+        insight_c.metric("Artist Diversity", insights["artist_diversity"])
+
         left, right = st.columns([1.2, 2])
         with left:
             st.subheader("Emotion Breakdown")
@@ -393,7 +491,7 @@ def main():
                     mime="text/csv",
                 )
     else:
-        st.caption("Run a scan to generate mood-based recommendations.")
+        st.caption("Generate a demo playlist or run a scan to build mood-based recommendations.")
 
 
 if __name__ == "__main__":

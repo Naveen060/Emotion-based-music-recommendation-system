@@ -2,4 +2,4 @@ numpy
 pandas
 opencv-python
 streamlit
-tensorflow
+tensorflow; python_version < "3.13"

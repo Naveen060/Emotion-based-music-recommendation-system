@@ -1,0 +1,6 @@
+.venv/
+.edge-profile/
+__pycache__/
+*.py[cod]
+streamlit.log
+streamlit.err.log
